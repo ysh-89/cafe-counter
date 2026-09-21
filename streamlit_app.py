@@ -9,7 +9,7 @@ from streamlit_js_eval import get_geolocation
 st.set_page_config(page_title="위치 기반 카페 실시간 지도 앱", layout="wide")
 
 st.title("☕ 위치 기반 카페 실시간 지도 앱")
-st.write("지도를 자유롭게 이동하고 확대/축소하세요. **설정한 화면 시점이 그대로 유지**됩니다.")
+st.write("지도 위의 **카페 아이콘(마커)을 클릭**하면 해당 지점의 상세 정보가 바로 조회됩니다.")
 
 # 2. 거리 계산 함수 (Haversine Formula)
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -51,7 +51,7 @@ def load_cafe_data():
 
 df_cafe = load_cafe_data()
 
-# Session State 초기화 (지도 위치 및 줌 배율 고정용)
+# Session State 초기화
 if "cafe_counts" not in st.session_state:
     st.session_state.cafe_counts = {}
 if "last_message" not in st.session_state:
@@ -61,7 +61,9 @@ if "last_status" not in st.session_state:
 if "map_center" not in st.session_state:
     st.session_state.map_center = [df_cafe["위도"].iloc[0], df_cafe["경도"].iloc[0]]
 if "map_zoom" not in st.session_state:
-    st.session_state.map_zoom = 15  # 기본 확대 배율
+    st.session_state.map_zoom = 15
+if "selected_cafe" not in st.session_state:
+    st.session_state.selected_cafe = df_cafe["상호명"].iloc[0]
 
 # ==========================================
 # 4. 사이드바 필터 (지역 선택 + 시설 조건)
@@ -108,6 +110,11 @@ if len(filtered_df) == 0:
     st.warning("⚠️ 선택하신 조건에 해당하는 카페가 없습니다. 필터를 완화해 주세요.")
     filtered_df = df_cafe.copy()
 
+# 선택된 카페가 필터링된 목록에 없으면 첫 번째 항목으로 재설정
+available_cafes = list(filtered_df["상호명"].unique())
+if st.session_state.selected_cafe not in available_cafes:
+    st.session_state.selected_cafe = available_cafes[0]
+
 # 5. 사용자 위치 수집
 st.subheader("📍 1. 위치 권한 확인")
 loc = get_geolocation()
@@ -125,12 +132,18 @@ st.markdown("---")
 # 6. 카페 선택 및 상세 정보 확인 UI
 st.subheader("🗺️ 2. 지도 및 주변 카페 (최대 50개)")
 
+def on_cafe_change():
+    st.session_state.selected_cafe = st.session_state.cafe_select_box
+
 selected_cafe_name = st.selectbox(
-    "조회할 카페를 선택하세요:",
-    filtered_df["상호명"].unique()
+    "조회할 카페를 선택하거나 지도의 아이콘을 누르세요:",
+    available_cafes,
+    index=available_cafes.index(st.session_state.selected_cafe),
+    key="cafe_select_box",
+    on_change=on_cafe_change
 )
 
-cafe_info = filtered_df[filtered_df["상호명"] == selected_cafe_name].iloc[0]
+cafe_info = filtered_df[filtered_df["상호명"] == st.session_state.selected_cafe].iloc[0]
 cafe_lat = cafe_info["위도"]
 cafe_lon = cafe_info["경도"]
 
@@ -142,7 +155,7 @@ col3.metric("콘센트", f"{cafe_info['콘센트']}개")
 col4.metric("와이파이 속도", f"{cafe_info['와이파이 속도']}")
 col5.metric("지역", f"{cafe_info['시군구명']}")
 
-# 저장된 지도의 현재 중심 좌표 및 줌 배율 사용
+# 시점 위치 가져오기
 center_lat, center_lon = st.session_state.map_center
 current_zoom = st.session_state.map_zoom
 
@@ -153,7 +166,7 @@ filtered_df["dist_from_center"] = filtered_df.apply(
 # 화면 중앙 기준 최단거리 카페 상위 50개 선택
 nearby_50_cafes = filtered_df.sort_values("dist_from_center").head(50)
 
-# Folium 지도 생성 (사용자가 이동/확대한 시점 고정)
+# Folium 지도 생성
 m = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=current_zoom, 
@@ -162,7 +175,7 @@ m = folium.Map(
 
 # 50개 카페 마커 표시
 for idx, row in nearby_50_cafes.iterrows():
-    is_target = (row["상호명"] == selected_cafe_name)
+    is_target = (row["상호명"] == st.session_state.selected_cafe)
     icon_color = "red" if is_target else "gray"
     icon_shape = "star" if is_target else "coffee"
     
@@ -171,7 +184,7 @@ for idx, row in nearby_50_cafes.iterrows():
     folium.Marker(
         location=[row["위도"], row["경도"]],
         popup=folium.Popup(popup_html, max_width=220),
-        tooltip=row["상호명"],
+        tooltip=row["상호명"],  # 마커 클릭 이벤트를 상호명으로 식별
         icon=folium.Icon(color=icon_color, icon=icon_shape, prefix="fa")
     ).add_to(m)
 
@@ -182,7 +195,7 @@ folium.Circle(
     color="blue",
     fill=True,
     fill_opacity=0.2,
-    popup=f"{selected_cafe_name} 반경 100m"
+    popup=f"{st.session_state.selected_cafe} 반경 100m"
 ).add_to(m)
 
 if user_lat and user_lon:
@@ -193,15 +206,23 @@ if user_lat and user_lon:
         icon=folium.Icon(color="blue", icon="user", prefix="fa")
     ).add_to(m)
 
-# 지도 렌더링
+# 지도 렌더링 및 클릭 이벤트 감지
 st_data = st_folium(m, width=700, height=400, key="cafe_map")
 
-# [시점 유지 핵심 로직] 지도 이동 및 확대/축소 시 줌 배율과 중심 좌표 동시 유지
+# [마커 클릭 및 화면 이동 동시 감지 로직]
 if st_data:
+    need_rerun = False
+    
+    # 1. 카페 마커(아이콘) 클릭 감지
+    clicked_tooltip = st_data.get("last_object_clicked_tooltip")
+    if clicked_tooltip and clicked_tooltip in available_cafes:
+        if clicked_tooltip != st.session_state.selected_cafe:
+            st.session_state.selected_cafe = clicked_tooltip
+            need_rerun = True
+
+    # 2. 지도 이동 및 확대/축소 시 시점 유지
     new_center = st_data.get("center")
     new_zoom = st_data.get("zoom")
-    
-    need_rerun = False
     
     if new_center:
         new_lat, new_lon = new_center["lat"], new_center["lng"]
@@ -228,15 +249,15 @@ if st.button("🔄 인원수 체크 및 자동 카운팅"):
     else:
         dist = calculate_distance(user_lat, user_lon, cafe_lat, cafe_lon)
         
-        if selected_cafe_name not in st.session_state.cafe_counts:
-            st.session_state.cafe_counts[selected_cafe_name] = 0
+        if st.session_state.selected_cafe not in st.session_state.cafe_counts:
+            st.session_state.cafe_counts[st.session_state.selected_cafe] = 0
 
         if dist <= 100.0:
-            st.session_state.cafe_counts[selected_cafe_name] += 1
-            st.session_state.last_message = f"✅ 성공! [{selected_cafe_name}] 반경 100m 이내에 있습니다. (거리: {dist:.1f}m) -> 인원수 +1 반영 완료!"
+            st.session_state.cafe_counts[st.session_state.selected_cafe] += 1
+            st.session_state.last_message = f"✅ 성공! [{st.session_state.selected_cafe}] 반경 100m 이내에 있습니다. (거리: {dist:.1f}m) -> 인원수 +1 반영 완료!"
             st.session_state.last_status = "success"
         else:
-            st.session_state.last_message = f"❌ 제외됨! [{selected_cafe_name}] 반경 100m 밖(약 {dist:.1f}m 거리)에 있어 인원수 측정에서 제외되었습니다."
+            st.session_state.last_message = f"❌ 제외됨! [{st.session_state.selected_cafe}] 반경 100m 밖(약 {dist:.1f}m 거리)에 있어 인원수 측정에서 제외되었습니다."
             st.session_state.last_status = "warning"
 
 if st.session_state.last_status == "success":
@@ -248,5 +269,5 @@ elif st.session_state.last_status == "error":
 else:
     st.info(st.session_state.last_message)
 
-current_count = st.session_state.cafe_counts.get(selected_cafe_name, 0)
-st.metric(label=f"[{selected_cafe_name}] 현재 집계된 인원수", value=f"{current_count} 명")
+current_count = st.session_state.cafe_counts.get(st.session_state.selected_cafe, 0)
+st.metric(label=f"[{st.session_state.selected_cafe}] 현재 집계된 인원수", value=f"{current_count} 명")
