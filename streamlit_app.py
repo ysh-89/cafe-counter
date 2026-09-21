@@ -6,10 +6,10 @@ from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
 
 # 1. 페이지 기본 설정
-st.set_page_config(page_title="위치 기반 카페 통합 정보 앱", layout="wide")
+st.set_page_config(page_title="위치 기반 카페 실시간 지도 앱", layout="wide")
 
 st.title("☕ 위치 기반 카페 실시간 지도 앱")
-st.write("지도를 이동하면 **현재 화면 중앙 기점으로 가장 가까운 카페 50개**가 실시간으로 표시됩니다.")
+st.write("지도를 자유롭게 이동하고 확대/축소하세요. **설정한 화면 시점이 그대로 유지**됩니다.")
 
 # 2. 거리 계산 함수 (Haversine Formula)
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -51,7 +51,7 @@ def load_cafe_data():
 
 df_cafe = load_cafe_data()
 
-# Session State 초기화
+# Session State 초기화 (지도 위치 및 줌 배율 고정용)
 if "cafe_counts" not in st.session_state:
     st.session_state.cafe_counts = {}
 if "last_message" not in st.session_state:
@@ -59,8 +59,9 @@ if "last_message" not in st.session_state:
 if "last_status" not in st.session_state:
     st.session_state.last_status = "info"
 if "map_center" not in st.session_state:
-    # 기본 중심 위치 (데이터 첫 번째 카페 기준)
     st.session_state.map_center = [df_cafe["위도"].iloc[0], df_cafe["경도"].iloc[0]]
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 15  # 기본 확대 배율
 
 # ==========================================
 # 4. 사이드바 필터 (지역 선택 + 시설 조건)
@@ -122,10 +123,10 @@ else:
 st.markdown("---")
 
 # 6. 카페 선택 및 상세 정보 확인 UI
-st.subheader("🗺️ 2. 지도 중심 기반 주변 카페 (최대 50개)")
+st.subheader("🗺️ 2. 지도 및 주변 카페 (최대 50개)")
 
 selected_cafe_name = st.selectbox(
-    "조회할 카페를 선택하거나 아래 지도를 이동해 보세요:",
+    "조회할 카페를 선택하세요:",
     filtered_df["상호명"].unique()
 )
 
@@ -141,8 +142,9 @@ col3.metric("콘센트", f"{cafe_info['콘센트']}개")
 col4.metric("와이파이 속도", f"{cafe_info['와이파이 속도']}")
 col5.metric("지역", f"{cafe_info['시군구명']}")
 
-# [핵심 로직] 지도 화면 중앙(Center)을 기점으로 주변 50개 카페 추출
+# 저장된 지도의 현재 중심 좌표 및 줌 배율 사용
 center_lat, center_lon = st.session_state.map_center
+current_zoom = st.session_state.map_zoom
 
 filtered_df["dist_from_center"] = filtered_df.apply(
     lambda r: calculate_distance(center_lat, center_lon, r["위도"], r["경도"]), axis=1
@@ -151,8 +153,12 @@ filtered_df["dist_from_center"] = filtered_df.apply(
 # 화면 중앙 기준 최단거리 카페 상위 50개 선택
 nearby_50_cafes = filtered_df.sort_values("dist_from_center").head(50)
 
-# Folium 지도 생성
-m = folium.Map(location=[center_lat, center_lon], zoom_start=15, prefer_canvas=True)
+# Folium 지도 생성 (사용자가 이동/확대한 시점 고정)
+m = folium.Map(
+    location=[center_lat, center_lon], 
+    zoom_start=current_zoom, 
+    prefer_canvas=True
+)
 
 # 50개 카페 마커 표시
 for idx, row in nearby_50_cafes.iterrows():
@@ -187,17 +193,27 @@ if user_lat and user_lon:
         icon=folium.Icon(color="blue", icon="user", prefix="fa")
     ).add_to(m)
 
-# 지도 렌더링 및 이벤트 수집
+# 지도 렌더링
 st_data = st_folium(m, width=700, height=400, key="cafe_map")
 
-# [동적 갱신] 사용자가 지도를 이동했을 때 지도 중앙 좌표를 업데이트하여 주변 50개 재계산
-if st_data and st_data.get("center"):
-    new_center_lat = st_data["center"]["lat"]
-    new_center_lon = st_data["center"]["lng"]
+# [시점 유지 핵심 로직] 지도 이동 및 확대/축소 시 줌 배율과 중심 좌표 동시 유지
+if st_data:
+    new_center = st_data.get("center")
+    new_zoom = st_data.get("zoom")
     
-    # 일정 수준 이상의 이동이 있을 때 세션 상태 업데이트 후 새로고침
-    if (abs(new_center_lat - center_lat) > 0.0001 or abs(new_center_lon - center_lon) > 0.0001):
-        st.session_state.map_center = [new_center_lat, new_center_lon]
+    need_rerun = False
+    
+    if new_center:
+        new_lat, new_lon = new_center["lat"], new_center["lng"]
+        if (abs(new_lat - center_lat) > 0.0001 or abs(new_lon - center_lon) > 0.0001):
+            st.session_state.map_center = [new_lat, new_lon]
+            need_rerun = True
+            
+    if new_zoom and new_zoom != current_zoom:
+        st.session_state.map_zoom = new_zoom
+        need_rerun = True
+        
+    if need_rerun:
         st.rerun()
 
 st.markdown("---")
