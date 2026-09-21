@@ -62,7 +62,7 @@ if st.button("🔍 인원수 측정하기"):
                     if int(box.cls[0]) == 0:  # 사람(person)
                         person_count += 1
                 
-                # 결과 박스 시각화 (RGB 변환)
+                # 결과 박스 시각화
                 res_plotted = result.plot()
                 annotated_frame = Image.fromarray(res_plotted[..., ::-1])
 
