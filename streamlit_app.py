@@ -5,11 +5,11 @@ import folium
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
 
-# 1. 페이지 기본 설정 (가장 먼저 호출)
+# 1. 페이지 기본 설정
 st.set_page_config(page_title="위치 기반 카페 인원 측정기", layout="centered")
 
 st.title("☕ 위치 기반 카페 실시간 인원 측정기 (최적화 버전)")
-st.write("리소스 사용량을 줄이기 위해 내 주변 및 선택된 카페 중심로 간소화된 지도입니다.")
+st.write("편의점 데이터를 제외하고 오직 **카페** 데이터만 불러와 가볍고 빠르게 작동합니다.")
 
 # 2. 대권거리(Haversine) 계산 함수
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -24,14 +24,20 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return R * c
 
-# 3. 데이터 로드 및 캐싱 (속도 대폭 개선)
+# 3. 데이터 로드 및 편의점 제외 처리 (캐싱 적용)
 @st.cache_data
-def load_store_data():
+def load_cafe_data():
     df = pd.read_csv("store.csv")
-    cafe_df = df[df["상권업종소분류명"] == "카페"].reset_index(drop=True)
+    
+    # 디버깅 및 안전 장치: '상권업종소분류명' 열이 존재할 경우 '카페'만 필터링 (편의점 등 제외)
+    if "상권업종소분류명" in df.columns:
+        cafe_df = df[df["상권업종소분류명"] == "카페"].reset_index(drop=True)
+    else:
+        cafe_df = df.copy() # 혹시 모를 예외 대비
+        
     return cafe_df
 
-df_cafe = load_store_data()
+df_cafe = load_cafe_data()
 
 # Session State 초기화
 if "cafe_counts" not in st.session_state:
@@ -41,7 +47,7 @@ if "last_message" not in st.session_state:
 if "last_status" not in st.session_state:
     st.session_state.last_status = "info"
 if "selected_cafe" not in st.session_state:
-    st.session_state.selected_cafe = df_cafe["상호명"].iloc[0]
+    st.session_state.selected_cafe = df_cafe["상호명"].iloc[0] if len(df_cafe) > 0 else ""
 
 # 4. 사용자 위치 수집
 st.subheader("📍 1. 위치 권한 확인")
@@ -61,7 +67,7 @@ st.markdown("---")
 st.subheader("🗺️ 2. 카페 선택하기")
 
 selected_cafe_name = st.selectbox(
-    "조회할 카페 선택:",
+    "조회할 카페 선택 (편의점 제외됨):",
     df_cafe["상호명"].unique(),
     index=list(df_cafe["상호명"].unique()).index(st.session_state.selected_cafe)
     if st.session_state.selected_cafe in df_cafe["상호명"].unique() else 0
@@ -74,22 +80,21 @@ cafe_info = df_cafe[df_cafe["상호명"] == st.session_state.selected_cafe].iloc
 cafe_lat = cafe_info["위도"]
 cafe_lon = cafe_info["경도"]
 
-# [최적화 핵심] 4,372개를 다 그리지 않고, 선택된 카페 주변 3km 이내 카페만 필터링하여 렌더링 리소스 최소화
+# [리소스 최적화] 선택된 카페 주변 3km 이내의 카페만 필터링하여 마커 렌더링
 df_cafe["dist_from_selected"] = df_cafe.apply(
     lambda r: calculate_distance(cafe_lat, cafe_lon, r["위도"], r["경도"]), axis=1
 )
-nearby_cafes = df_cafe[df_cafe["dist_from_selected"] <= 3000]  # 3km 이내 매장만 추출
+nearby_cafes = df_cafe[df_cafe["dist_from_selected"] <= 3000]
 
-# Folium 지도 생성 (가볍게 최적화)
+# Folium 지도 생성
 m = folium.Map(location=[cafe_lat, cafe_lon], zoom_start=15, prefer_canvas=True)
 
-# 주변 카페 마커만 지도에 추가 (메모리 절약)
+# 주변 카페 마커 추가
 for idx, row in nearby_cafes.iterrows():
     is_target = (row["상호명"] == st.session_state.selected_cafe)
     icon_color = "red" if is_target else "gray"
     icon_shape = "star" if is_target else "coffee"
     
-    # 마커 개수가 적어지므로 버벅임이 사라짐
     folium.Marker(
         location=[row["위도"], row["경도"]],
         popup=row["상호명"],
@@ -144,7 +149,7 @@ if st.button("🔄 인원수 체크 및 자동 카운팅"):
             st.session_state.last_message = f"❌ 제외됨! [{st.session_state.selected_cafe}] 반경 100m 밖(약 {dist:.1f}m 거리)에 있어 인원수 측정에서 제외되었습니다."
             st.session_state.last_status = "warning"
 
-# 결과 출력
+# 결과 출력 유지
 if st.session_state.last_status == "success":
     st.success(st.session_state.last_message)
 elif st.session_state.last_status == "warning":
