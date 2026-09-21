@@ -1,5 +1,4 @@
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
@@ -47,10 +46,10 @@ if st.button("🔍 인원수 측정하기"):
     if not loc:
         st.warning("⚠️ 위치 정보가 확인되지 않았습니다. 위치 권한을 허용했는지 확인해 주세요.")
     elif img_file is None:
-        st.warning("⚠️ 카메라인 입력이나 이미지를 먼저 등록해 주세요.")
+        st.warning("⚠️ 카메라 입력이나 이미지를 먼저 등록해 주세요.")
     else:
         with st.spinner("이미지를 분석하여 인원수를 세는 중입니다..."):
-            image = Image.open(img_file)
+            image = Image.open(img_file).convert("RGB")
             img_array = np.array(image)
 
             # YOLO 모델로 사람(class 0) 탐지
@@ -63,10 +62,11 @@ if st.button("🔍 인원수 측정하기"):
                     if int(box.cls[0]) == 0:  # 사람(person)
                         person_count += 1
                 
-                # 결과 박스 시각화
-                annotated_frame = result.plot()
+                # 결과 박스 시각화 (RGB 변환)
+                res_plotted = result.plot()
+                annotated_frame = Image.fromarray(res_plotted[..., ::-1])
 
             st.balloons()
-            st.success(f"🎉 측정 완료!")
+            st.success("🎉 측정 완료!")
             st.metric(label="현재 측정된 카페 인원수", value=f"{person_count} 명")
             st.image(annotated_frame, caption="AI 인원 감지 결과", use_container_width=True)
