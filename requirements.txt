@@ -1,5 +1,5 @@
 streamlit
 streamlit-js-eval
-opencv-python-headless
-ultralytics
-pillow
+folium
+streamlit-folium
+pandas
