@@ -8,8 +8,8 @@ from streamlit_js_eval import get_geolocation
 # 1. 페이지 기본 설정
 st.set_page_config(page_title="위치 기반 카페 인원 측정기", layout="centered")
 
-st.title("☕ 위치 기반 카페 실시간 인원 측정기 (최적화 버전)")
-st.write("편의점 데이터를 제외하고 오직 **카페** 데이터만 불러와 가볍고 빠르게 작동합니다.")
+st.title("☕ 위치 기반 카페 실시간 인원 측정기")
+st.write("지도 리소스 최적화를 위해 주변 최대 150개의 카페 마커만 표시합니다.")
 
 # 2. 대권거리(Haversine) 계산 함수
 def calculate_distance(lat1, lon1, lat2, lon2):
@@ -28,13 +28,10 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 @st.cache_data
 def load_cafe_data():
     df = pd.read_csv("store.csv")
-    
-    # 디버깅 및 안전 장치: '상권업종소분류명' 열이 존재할 경우 '카페'만 필터링 (편의점 등 제외)
     if "상권업종소분류명" in df.columns:
         cafe_df = df[df["상권업종소분류명"] == "카페"].reset_index(drop=True)
     else:
-        cafe_df = df.copy() # 혹시 모를 예외 대비
-        
+        cafe_df = df.copy()
     return cafe_df
 
 df_cafe = load_cafe_data()
@@ -67,7 +64,7 @@ st.markdown("---")
 st.subheader("🗺️ 2. 카페 선택하기")
 
 selected_cafe_name = st.selectbox(
-    "조회할 카페 선택 (편의점 제외됨):",
+    "조회할 카페 선택:",
     df_cafe["상호명"].unique(),
     index=list(df_cafe["상호명"].unique()).index(st.session_state.selected_cafe)
     if st.session_state.selected_cafe in df_cafe["상호명"].unique() else 0
@@ -80,16 +77,16 @@ cafe_info = df_cafe[df_cafe["상호명"] == st.session_state.selected_cafe].iloc
 cafe_lat = cafe_info["위도"]
 cafe_lon = cafe_info["경도"]
 
-# [리소스 최적화] 선택된 카페 주변 3km 이내의 카페만 필터링하여 마커 렌더링
+# [리소스 최적화] 선택된 카페 기준 거리 계산 후 가까운 순으로 정렬하여 상위 150개만 추출
 df_cafe["dist_from_selected"] = df_cafe.apply(
     lambda r: calculate_distance(cafe_lat, cafe_lon, r["위도"], r["경도"]), axis=1
 )
-nearby_cafes = df_cafe[df_cafe["dist_from_selected"] <= 3000]
+nearby_cafes = df_cafe.sort_values("dist_from_selected").head(150)
 
-# Folium 지도 생성
+# Folium 지도 생성 (prefer_canvas로 렌더링 부하 감소)
 m = folium.Map(location=[cafe_lat, cafe_lon], zoom_start=15, prefer_canvas=True)
 
-# 주변 카페 마커 추가
+# 상위 150개 카페 마커만 지도에 추가
 for idx, row in nearby_cafes.iterrows():
     is_target = (row["상호명"] == st.session_state.selected_cafe)
     icon_color = "red" if is_target else "gray"
