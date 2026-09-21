@@ -6,12 +6,12 @@ from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
 
 # 1. 페이지 기본 설정
-st.set_page_config(page_title="위치 기반 카페 인원 측정기", layout="centered")
+st.set_page_config(page_title="위치 기반 카페 통합 정보 앱", layout="wide")
 
-st.title("☕ 위치 기반 카페 실시간 인원 측정기")
-st.write("지도 리소스 최적화를 위해 주변 최대 150개의 카페 마커만 표시합니다.")
+st.title("☕ 위치 기반 카페 통합 정보 및 인원 측정기")
+st.write("사이드바의 필터로 원하는 조건을 설정하고, 지도와 목록에서 상세한 카페 정보를 확인하세요.")
 
-# 2. 대권거리(Haversine) 계산 함수
+# 2. 거리 계산 함수
 def calculate_distance(lat1, lon1, lat2, lon2):
     R = 6371000.0  # 지구 반지름 (미터)
     phi1 = math.radians(lat1)
@@ -24,14 +24,31 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
     return R * c
 
-# 3. 데이터 로드 및 편의점 제외 처리 (캐싱 적용)
+# 3. 데이터 로드 및 전처리 (캐싱)
 @st.cache_data
 def load_cafe_data():
-    df = pd.read_csv("store.csv")
+    # 한글 인코딩 오류 방지를 위해 cp949 시도 후 실패 시 utf-8
+    try:
+        df = pd.read_csv("store (1).csv", encoding="cp949")
+    except UnicodeDecodeError:
+        df = pd.read_csv("store (1).csv", encoding="utf-8")
+        
     if "상권업종소분류명" in df.columns:
         cafe_df = df[df["상권업종소분류명"] == "카페"].reset_index(drop=True)
     else:
         cafe_df = df.copy()
+    
+    # 공백 포함된 컬럼명 정리 및 데이터 정제
+    cafe_df.columns = cafe_df.columns.str.strip()
+    
+    # 텍스트로 들어있을 수 있는 '자리', '개', 'mbps' 문자 제거 후 숫자로 변환 (필터링용)
+    for col, target_col in [("좌석수", "좌석 수"), ("1인좌석수", "1인 좌석 수"), ("콘센트", "콘센트"), ("와이파이속도", "와이파이 속도")]:
+        if target_col in cafe_df.columns:
+            cafe_df[col] = cafe_df[target_col].astype(str).str.replace(r'[^0-9.]', '', regex=True)
+            cafe_df[col] = pd.to_numeric(cafe_df[col], errors='coerce').fillna(0)
+        else:
+            cafe_df[col] = 0
+            
     return cafe_df
 
 df_cafe = load_cafe_data()
@@ -43,10 +60,33 @@ if "last_message" not in st.session_state:
     st.session_state.last_message = "아직 측정 이력이 없습니다."
 if "last_status" not in st.session_state:
     st.session_state.last_status = "info"
-if "selected_cafe" not in st.session_state:
-    st.session_state.selected_cafe = df_cafe["상호명"].iloc[0] if len(df_cafe) > 0 else ""
 
-# 4. 사용자 위치 수집
+# ==========================================
+# 4. 사이드바 탭 (필터 기능 구현)
+# ==========================================
+st.sidebar.header("🔍 카페 조건 필터")
+
+min_seats = st.sidebar.slider("최소 좌석 수", min_value=0, max_value=150, value=10, step=5)
+min_single_seats = st.sidebar.slider("최소 1인 좌석 수", min_value=0, max_value=50, value=5, step=5)
+min_outlets = st.sidebar.slider("최소 콘센트 수", min_value=0, max_value=40, value=5, step=5)
+min_wifi = st.sidebar.slider("최소 와이파이 속도 (mbps)", min_value=0, max_value=500, value=50, step=25)
+
+# 사이드바 필터 적용
+filtered_df = df_cafe[
+    (df_cafe["좌석수"] >= min_seats) &
+    (df_cafe["1인좌석수"] >= min_single_seats) &
+    (df_cafe["콘센트"] >= min_outlets) &
+    (df_cafe["와이파이속도"] >= min_wifi)
+].reset_index(drop=True)
+
+st.sidebar.markdown(f"**조건에 맞는 카페 수**: 총 {len(filtered_df)}개")
+
+# 필터링된 결과가 없을 경우 대비
+if len(filtered_df) == 0:
+    st.warning("⚠️ 조건에 일치하는 카페가 없습니다. 사이드바의 필터를 완화해 주세요.")
+    filtered_df = df_cafe.copy()
+
+# 5. 사용자 위치 수집
 st.subheader("📍 1. 위치 권한 확인")
 loc = get_geolocation()
 
@@ -60,56 +100,60 @@ else:
 
 st.markdown("---")
 
-# 5. 카페 선택 UI
-st.subheader("🗺️ 2. 카페 선택하기")
+# 6. 카페 선택 및 상세 정보 확인 UI
+st.subheader("🗺️ 2. 카페 지도 및 상세 정보 조회")
 
 selected_cafe_name = st.selectbox(
-    "조회할 카페 선택:",
-    df_cafe["상호명"].unique(),
-    index=list(df_cafe["상호명"].unique()).index(st.session_state.selected_cafe)
-    if st.session_state.selected_cafe in df_cafe["상호명"].unique() else 0
+    "필터링된 카페 중 조회할 곳을 선택하세요:",
+    filtered_df["상호명"].unique()
 )
 
-if selected_cafe_name != st.session_state.selected_cafe:
-    st.session_state.selected_cafe = selected_cafe_name
-
-cafe_info = df_cafe[df_cafe["상호명"] == st.session_state.selected_cafe].iloc[0]
+cafe_info = filtered_df[filtered_df["상호명"] == selected_cafe_name].iloc[0]
 cafe_lat = cafe_info["위도"]
 cafe_lon = cafe_info["경도"]
 
-# [리소스 최적화] 선택된 카페 기준 거리 계산 후 가까운 순으로 정렬하여 상위 150개만 추출
-df_cafe["dist_from_selected"] = df_cafe.apply(
+# [통합 카페 정보 카드 출력]
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("좌석 수", f"{cafe_info['좌석 수']}")
+col2.metric("1인 좌석 수", f"{cafe_info['1인 좌석 수']}")
+col3.metric("콘센트", f"{cafe_info['콘센트']}개")
+col4.metric("와이파이 속도", f"{cafe_info['와이파이 속도']}")
+col5.metric("지역", f"{cafe_info['시군구명']}")
+
+# 지도 리소스 최적화 (가까운 순 상위 150개 마커만 표시)
+filtered_df["dist_from_selected"] = filtered_df.apply(
     lambda r: calculate_distance(cafe_lat, cafe_lon, r["위도"], r["경도"]), axis=1
 )
-nearby_cafes = df_cafe.sort_values("dist_from_selected").head(150)
+nearby_cafes = filtered_df.sort_values("dist_from_selected").head(150)
 
-# Folium 지도 생성 (prefer_canvas로 렌더링 부하 감소)
+# Folium 지도 생성
 m = folium.Map(location=[cafe_lat, cafe_lon], zoom_start=15, prefer_canvas=True)
 
-# 상위 150개 카페 마커만 지도에 추가
 for idx, row in nearby_cafes.iterrows():
-    is_target = (row["상호명"] == st.session_state.selected_cafe)
+    is_target = (row["상호명"] == selected_cafe_name)
     icon_color = "red" if is_target else "gray"
     icon_shape = "star" if is_target else "coffee"
     
+    # 팝업에 카페 통합 정보 표시
+    popup_html = f"<b>{row['상호명']}</b><br>좌석: {row['좌석 수']}석<br>콘센트: {row['콘센트']}<br>와이파이: {row['와이파이 속도']}"
+    
     folium.Marker(
         location=[row["위도"], row["경도"]],
-        popup=row["상호명"],
+        popup=folium.Popup(popup_html, max_width=220),
         tooltip=row["상호명"],
         icon=folium.Icon(color=icon_color, icon=icon_shape, prefix="fa")
     ).add_to(m)
 
-# 선택된 카페 반경 100m 원 표시
+# 반경 100m 원 표시
 folium.Circle(
     location=[cafe_lat, cafe_lon],
     radius=100,
     color="blue",
     fill=True,
     fill_opacity=0.2,
-    popup=f"{st.session_state.selected_cafe} 반경 100m"
+    popup=f"{selected_cafe_name} 반경 100m"
 ).add_to(m)
 
-# 사용자 위치 마커 표시
 if user_lat and user_lon:
     folium.Marker(
         location=[user_lat, user_lon],
@@ -118,14 +162,12 @@ if user_lat and user_lon:
         icon=folium.Icon(color="blue", icon="user", prefix="fa")
     ).add_to(m)
 
-# 지도 렌더링
 st_data = st_folium(m, width=700, height=400)
 
 st.markdown("---")
 
-# 6. 인원 측정 및 결과 메시지 유지
+# 7. 인원 측정 및 결과 메시지 유지
 st.subheader("🏬 3. 인원 측정 및 결과")
-st.write(f"현재 선택된 카페: **{st.session_state.selected_cafe}** ({cafe_info['시도명']} {cafe_info['시군구명']})")
 
 if st.button("🔄 인원수 체크 및 자동 카운팅"):
     if user_lat is None or user_lon is None:
@@ -134,19 +176,17 @@ if st.button("🔄 인원수 체크 및 자동 카운팅"):
     else:
         dist = calculate_distance(user_lat, user_lon, cafe_lat, cafe_lon)
         
-        if st.session_state.selected_cafe not in st.session_state.cafe_counts:
-            st.session_state.cafe_counts[st.session_state.selected_cafe] = 0
+        if selected_cafe_name not in st.session_state.cafe_counts:
+            st.session_state.cafe_counts[selected_cafe_name] = 0
 
-        # 반경 100m 판별
         if dist <= 100.0:
-            st.session_state.cafe_counts[st.session_state.selected_cafe] += 1
-            st.session_state.last_message = f"✅ 성공! [{st.session_state.selected_cafe}] 반경 100m 이내에 있습니다. (거리: {dist:.1f}m) -> 인원수 +1 반영 완료!"
+            st.session_state.cafe_counts[selected_cafe_name] += 1
+            st.session_state.last_message = f"✅ 성공! [{selected_cafe_name}] 반경 100m 이내에 있습니다. (거리: {dist:.1f}m) -> 인원수 +1 반영 완료!"
             st.session_state.last_status = "success"
         else:
-            st.session_state.last_message = f"❌ 제외됨! [{st.session_state.selected_cafe}] 반경 100m 밖(약 {dist:.1f}m 거리)에 있어 인원수 측정에서 제외되었습니다."
+            st.session_state.last_message = f"❌ 제외됨! [{selected_cafe_name}] 반경 100m 밖(약 {dist:.1f}m 거리)에 있어 인원수 측정에서 제외되었습니다."
             st.session_state.last_status = "warning"
 
-# 결과 출력 유지
 if st.session_state.last_status == "success":
     st.success(st.session_state.last_message)
 elif st.session_state.last_status == "warning":
@@ -156,5 +196,5 @@ elif st.session_state.last_status == "error":
 else:
     st.info(st.session_state.last_message)
 
-current_count = st.session_state.cafe_counts.get(st.session_state.selected_cafe, 0)
-st.metric(label=f"[{st.session_state.selected_cafe}] 현재 집계된 인원수", value=f"{current_count} 명")
+current_count = st.session_state.cafe_counts.get(selected_cafe_name, 0)
+st.metric(label=f"[{selected_cafe_name}] 현재 집계된 인원수", value=f"{current_count} 명")
